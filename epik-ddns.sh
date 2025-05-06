@@ -1,25 +1,24 @@
 #!/bin/bash
 
-# TODO Epik API access requires a whitelisted IP address, so this script should
-# TODO be rewritten with a client-server architecture, with DDNS updates being
-# TODO pushed from a static IP proxy server.
-
 # epik-ddns.sh
+# Author: CoeJoder [github.com]
 #
-# Simple DDNS script to update Epik DNS records.
+# A simple DDNS script to update Epik DNS records.
 #
-# See: https://docs-userapi.epik.com/v2/#/Ddns/setDdns
-# See: https://registrar.epik.com/account/api-settings/
+# Requires: bash, curl, touch, jq
 #
-# The following must be defined in `~/.epik-ddns/properties.sh`
+# The following are required to be defined in ~/.epik-ddns/properties.sh:
 #   EPIK_SIGNATURE - domain-specific API key
 #   EPIK_HOSTNAME  - subdomain or root, e.g. @
 #
-# `wget` is required.
+# Epik API docs and portal:
+# https://docs-userapi.epik.com/v2/#/Ddns/setDdns
+# https://registrar.epik.com/account/api-settings/
 #
-# Author: CoeJoder
+# Thanks to Nazar78 [TeaNazaR.com] for his `godaddy-ddns` script,
+# on which this script is roughly based.
 
-# required to exist
+# contains script vars; required to exist
 EPIK_DDNS_PROPERTIES_SH="$HOME/.epik-ddns/properties.sh"
 
 # OpenWRT network functions; optional to exist
@@ -27,16 +26,21 @@ EPIK_DDNS_PROPERTIES_SH="$HOME/.epik-ddns/properties.sh"
 OPENWRT_NETWORK_SH='/lib/functions/network.sh'
 EXTERNAL_IP_SERVICE='https://ipinfo.io/ip'
 
+# cache for last-known WAN IP
+WAN_IP_CACHE=/tmp/last_known_wan_ip
+
 # used to validate IPv4 addresses
 # source: https://unix.stackexchange.com/a/111852
 IP_OCTET='([1-9]?[0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])'
 IP_REGEX="^$IP_OCTET\.$IP_OCTET\.$IP_OCTET\.$IP_OCTET\$"
 
-# ensure `wget` is available
-if ! type -P wget &>/dev/null; then
-	echo 'wget not found' >&2
-	exit 1
-fi
+# ensure availability of dependencies
+for _command in curl touch jq; do
+	if ! type -P "$_command" &>/dev/null; then
+		echo "\`$_command\` not found" >&2
+		exit 1
+	fi
+done
 
 # read & validate properties file
 if [[ ! -f $EPIK_DDNS_PROPERTIES_SH ]]; then
@@ -53,31 +57,49 @@ if [[ -z $EPIK_HOSTNAME ]]; then
 	exit 1
 fi
 
+# ensure WAN IP cache is writable
+if ! touch "$WAN_IP_CACHE" &>/dev/null; then
+	echo "can't write to $WAN_IP_CACHE" >&2
+	exit 1
+fi
+
 # discover WAN IP address
 if [[ -f $OPENWRT_NETWORK_SH ]]; then
 	source "$OPENWRT_NETWORK_SH"
-	network_get_ipaddr _WAN_IP wan
+	network_get_ipaddr _wan_ip wan
 fi
-if [[ -z $_WAN_IP ]]; then
-	_WAN_IP="$(wget -qO- "$EXTERNAL_IP_SERVICE")"
+if [[ -z $_wan_ip ]]; then
+	_wan_ip="$(curl -kLs "$EXTERNAL_IP_SERVICE")"
 fi
-if [[ -z $_WAN_IP ]]; then
+if [[ -z $_wan_ip ]]; then
 	echo 'WAN IP discovery failed' >&2
 	exit 1
 fi
-if [[ ! $_WAN_IP =~ $IP_REGEX ]]; then
-	echo "WAN IP invalid: $_WAN_IP" >&2
+if [[ ! $_wan_ip =~ $IP_REGEX ]]; then
+	echo "WAN IP invalid: $_wan_ip" >&2
 	exit 1
 fi
 
-# TODO compare current IP to previous and post update only if changed
+# if current WAN IP doesn't match previous, POST the update
+if [[ $_wan_ip != $(<"$WAN_IP_CACHE") ]]; then
+	_response="$(curl -X 'POST' "https://usersapiv2.epik.com/v2/ddns/set-ddns?SIGNATURE=$EPIK_SIGNATURE" \
+		-H 'Accept: application/json' \
+		-H 'Content-Type: application/json' \
+		-d "{
+			\"hostname\": \"$EPIK_HOSTNAME\",
+			\"value\": \"$_wan_ip\"
+		}")"
+	if [[ $? -ne 0 ]]; then
+		echo "curl failure: $_response" >&2
+		exit 1
+	fi
 
-wget -O- \
-	--header='accept: application/json' \
-	--header='Content-Type: application/json' \
-	--post-data="{
-	\"hostname\": \"$EPIK_HOSTNAME\",
-	\"value\": \"$_WAN_IP\"
-}" "https://usersapiv2.epik.com/v2/ddns/set-ddns?SIGNATURE=$EPIK_SIGNATURE"
-
-# TODO check if update was successful
+	# update cache if API call was successful
+	_response_errors="$(jq -r '.errors[0] | .description' <<< "$_response")"
+	if [[ $_response_errors != null ]]; then
+		echo "$_response_errors" >&2
+		exit 1
+	fi
+	printf '%s' "$_wan_ip" >"$WAN_IP_CACHE"
+fi
+exit 0
