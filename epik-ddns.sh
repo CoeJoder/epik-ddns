@@ -88,25 +88,22 @@ fi
 _current_time="$(date +%s)"
 
 function postUpdateAndExit() {
-	local _response _response_errors
+	local _response _response_error
 
 	# API call
-	_response="$(curl -kLsX 'POST' "https://usersapiv2.epik.com/v2/ddns/set-ddns?SIGNATURE=$EPIK_SIGNATURE" \
+	_response="$(curl -LSsX 'POST' --fail-with-body \
+		"https://usersapiv2.epik.com/v2/ddns/set-ddns?SIGNATURE=$EPIK_SIGNATURE" \
 		-H 'Accept: application/json' \
 		-H 'Content-Type: application/json' \
 		-d "{
 			\"hostname\": \"$EPIK_HOSTNAME\",
 			\"value\": \"$_wan_ip\"
 		}")"
-	if [[ $? -ne 0 ]]; then
-		echo "curl failure: $_response" >&2
-		exit 1
-	fi
 
-	# propagate API-response error to stderr, if any
-	_response_errors="$(jq -r '.errors[0] | .description' <<<"$_response")"
-	if [[ $_response_errors != null ]]; then
-		echo "$_response_errors" >&2
+	# check for server errors
+	_response_error="$(jq -r '.errors[0] | .description' <<<"$_response")"
+	if [[ $_response_error != null ]]; then
+		echo "$_response_error" >&2
 		exit 1
 	fi
 
