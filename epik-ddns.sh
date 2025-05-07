@@ -33,7 +33,7 @@ EPIK_DDNS_PROPERTIES_SH="$HOME/.epik-ddns/properties.sh"
 OPENWRT_NETWORK_SH='/lib/functions/network.sh'
 EXTERNAL_IP_SERVICE='https://ipinfo.io/ip'
 
-# cache for last-known WAN IP and timestamp
+# timestamped WAN IP used by the previous successful API call
 EPIK_DDNS_CACHE="$HOME/.epik-ddns/last_update_cache.txt"
 
 # used to validate IPv4 addresses
@@ -60,11 +60,11 @@ if [[ ! -f $EPIK_DDNS_PROPERTIES_SH ]]; then
 fi
 source "$EPIK_DDNS_PROPERTIES_SH"
 if [[ -z $EPIK_SIGNATURE ]]; then
-	echo "EPIK_SIGNATURE not set" >&2
+	echo 'EPIK_SIGNATURE not set' >&2
 	exit 1
 fi
 if [[ -z $EPIK_HOSTNAME ]]; then
-	echo "EPIK_HOSTNAME not set" >&2
+	echo 'EPIK_HOSTNAME not set' >&2
 	exit 1
 fi
 
@@ -87,8 +87,10 @@ fi
 
 _current_time="$(date +%s)"
 
-function postUpdate() {
+function postUpdateAndExit() {
 	local _response _response_errors
+
+	# API call
 	_response="$(curl -kLsX 'POST' "https://usersapiv2.epik.com/v2/ddns/set-ddns?SIGNATURE=$EPIK_SIGNATURE" \
 		-H 'Accept: application/json' \
 		-H 'Content-Type: application/json' \
@@ -101,33 +103,39 @@ function postUpdate() {
 		exit 1
 	fi
 
-	# update WAN IP cache if API call was successful
+	# propagate API-response error to stderr, if any
 	_response_errors="$(jq -r '.errors[0] | .description' <<<"$_response")"
 	if [[ $_response_errors != null ]]; then
 		echo "$_response_errors" >&2
 		exit 1
 	fi
-	if ! printf '%s %s' "$_wan_ip" "$_current_time" >"$EPIK_DDNS_CACHE"; then
+
+	# update WAN IP cache
+	if ! printf '%s %s' "$_current_time" "$_wan_ip" >"$EPIK_DDNS_CACHE"; then
 		echo 'failed to write WAN IP cache' >&2
 		exit 1
 	fi
+
 	exit 0
 }
 
 # POST the update iff:
-#  - WAN IP cache is not found/readable, or
+#  - cached WAN IP is missing/unreadable, or
+#  - cached WAN IP timestamp is missing/malformed, or
 #  - current WAN IP doesn't match the cached one, or
-#  - it's been more than 24-hours since last update
+#  - more than 24-hours has elapsed since last update
 if [[ ! -r $EPIK_DDNS_CACHE ]]; then
-	postUpdate
+	postUpdateAndExit
 else
-	read _wan_ip_cached _last_update_timestamp <"$EPIK_DDNS_CACHE"
-	if [[ $_wan_ip != $_wan_ip_cached ]]; then
-		postUpdate
-	elif [[ $_last_update_timestamp =~ $UINT_REGEX ]]; then
+	read _last_update_timestamp _wan_ip_cached <"$EPIK_DDNS_CACHE"
+	if [[ ! $_last_update_timestamp =~ $UINT_REGEX ]]; then
+		postUpdateAndExit
+	elif [[ $_wan_ip != $_wan_ip_cached ]]; then
+		postUpdateAndExit
+	else
 		_time_since_last_update="$((_current_time - _last_update_timestamp))"
-		if ((_time_since_last_update > $ONE_DAY_IN_SECONDS)); then
-			postUpdate
+		if [[ $_time_since_last_update -gt $ONE_DAY_IN_SECONDS ]]; then
+			postUpdateAndExit
 		fi
 	fi
 fi
