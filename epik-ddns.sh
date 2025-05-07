@@ -5,14 +5,21 @@
 #
 # A simple DDNS script to update Epik DNS records.
 #
-# Requires: bash, curl, touch, jq
+# Requires: bash, curl, jq
 #
 # The following are required to be defined in ~/.epik-ddns/properties.sh:
 #   EPIK_SIGNATURE - domain-specific API key
 #   EPIK_HOSTNAME  - subdomain or root, e.g. @
 #
+# Exit Statuses:
+#   0: successful invocation
+#   1: fatal error
+#   2: invocation skipped (e.g., due to caching)
+#
 # Epik API docs and portal:
 # https://docs-userapi.epik.com/v2/#/Ddns/setDdns
+#
+# Epik API account settings:
 # https://registrar.epik.com/account/api-settings/
 #
 # Thanks to Nazar78 [TeaNazaR.com] for his `godaddy-ddns` script,
@@ -26,16 +33,20 @@ EPIK_DDNS_PROPERTIES_SH="$HOME/.epik-ddns/properties.sh"
 OPENWRT_NETWORK_SH='/lib/functions/network.sh'
 EXTERNAL_IP_SERVICE='https://ipinfo.io/ip'
 
-# cache for last-known WAN IP
-WAN_IP_CACHE=/tmp/last_known_wan_ip
+# cache for last-known WAN IP and timestamp
+EPIK_DDNS_CACHE="$HOME/.epik-ddns/last_update_cache.txt"
 
 # used to validate IPv4 addresses
 # source: https://unix.stackexchange.com/a/111852
 IP_OCTET='([1-9]?[0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])'
 IP_REGEX="^$IP_OCTET\.$IP_OCTET\.$IP_OCTET\.$IP_OCTET\$"
 
+# used to validate timestamps
+UINT_REGEX='^[[:digit:]]+$'
+ONE_DAY_IN_SECONDS="$((24 * 60 * 60))"
+
 # ensure availability of dependencies
-for _command in curl touch jq; do
+for _command in curl jq; do
 	if ! type -P "$_command" &>/dev/null; then
 		echo "\`$_command\` not found" >&2
 		exit 1
@@ -57,12 +68,6 @@ if [[ -z $EPIK_HOSTNAME ]]; then
 	exit 1
 fi
 
-# ensure WAN IP cache is writable
-if ! touch "$WAN_IP_CACHE" &>/dev/null; then
-	echo "can't write to $WAN_IP_CACHE" >&2
-	exit 1
-fi
-
 # discover WAN IP address
 if [[ -f $OPENWRT_NETWORK_SH ]]; then
 	source "$OPENWRT_NETWORK_SH"
@@ -80,9 +85,11 @@ if [[ ! $_wan_ip =~ $IP_REGEX ]]; then
 	exit 1
 fi
 
-# if current WAN IP doesn't match previous, POST the update
-if [[ $_wan_ip != $(<"$WAN_IP_CACHE") ]]; then
-	_response="$(curl -X 'POST' "https://usersapiv2.epik.com/v2/ddns/set-ddns?SIGNATURE=$EPIK_SIGNATURE" \
+_current_time="$(date +%s)"
+
+function postUpdate() {
+	local _response _response_errors
+	_response="$(curl -kLsX 'POST' "https://usersapiv2.epik.com/v2/ddns/set-ddns?SIGNATURE=$EPIK_SIGNATURE" \
 		-H 'Accept: application/json' \
 		-H 'Content-Type: application/json' \
 		-d "{
@@ -94,12 +101,34 @@ if [[ $_wan_ip != $(<"$WAN_IP_CACHE") ]]; then
 		exit 1
 	fi
 
-	# update cache if API call was successful
-	_response_errors="$(jq -r '.errors[0] | .description' <<< "$_response")"
+	# update WAN IP cache if API call was successful
+	_response_errors="$(jq -r '.errors[0] | .description' <<<"$_response")"
 	if [[ $_response_errors != null ]]; then
 		echo "$_response_errors" >&2
 		exit 1
 	fi
-	printf '%s' "$_wan_ip" >"$WAN_IP_CACHE"
+	if ! printf '%s %s' "$_wan_ip" "$_current_time" >"$EPIK_DDNS_CACHE"; then
+		echo 'failed to write WAN IP cache' >&2
+		exit 1
+	fi
+	exit 0
+}
+
+# POST the update iff:
+#  - WAN IP cache is not found/readable, or
+#  - current WAN IP doesn't match the cached one, or
+#  - it's been more than 24-hours since last update
+if [[ ! -r $EPIK_DDNS_CACHE ]]; then
+	postUpdate
+else
+	read _wan_ip_cached _last_update_timestamp <"$EPIK_DDNS_CACHE"
+	if [[ $_wan_ip != $_wan_ip_cached ]]; then
+		postUpdate
+	elif [[ $_last_update_timestamp =~ $UINT_REGEX ]]; then
+		_time_since_last_update="$((_current_time - _last_update_timestamp))"
+		if ((_time_since_last_update > $ONE_DAY_IN_SECONDS)); then
+			postUpdate
+		fi
+	fi
 fi
-exit 0
+exit 2
