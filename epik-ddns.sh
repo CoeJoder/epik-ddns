@@ -3,18 +3,29 @@
 # epik-ddns.sh
 # Author: CoeJoder [github.com]
 #
-# A simple DDNS script to update Epik DNS records.
+# A simple DDNS bash script to update Epik DNS records.
+#
+# Suggested to be run periodically as a cron job, this script calls Epik's
+# `set-ddns` API method whenever a change to the host's external IP address is
+# detected.  As Epik has no `read-ddns` method available sans IP-whitelisting,
+# the call is always made on the first run, and at least once every 24-hours.
+#
+# When run on OpenWRT router firmware, an internal library function is called
+# which returns the device's WAN IP.  Otherwise, an external service is used to
+# fetch the host's external IP: https://ipinfo.io/ip
 #
 # Requires: bash, curl, jq
 #
-# The following are required to be defined in ~/.epik-ddns/properties.sh:
+# The following variables are required to be set in: ~/.epik-ddns/properties.sh
 #   EPIK_SIGNATURE - domain-specific API key
 #   EPIK_HOSTNAME  - subdomain or root, e.g. @
 #
+# A cache file is created by the script here: ~/.epik-ddns/last_update_cache.txt
+#
 # Exit Statuses:
-#   0: successful invocation
+#   0: call successful
 #   1: fatal error
-#   2: invocation skipped (e.g., due to caching)
+#   2: call skipped (e.g., due to caching)
 #
 # Epik API docs and portal:
 # https://docs-userapi.epik.com/v2/#/Ddns/setDdns
@@ -22,19 +33,19 @@
 # Epik API account settings:
 # https://registrar.epik.com/account/api-settings/
 #
-# Thanks to Nazar78 [TeaNazaR.com] for his `godaddy-ddns` script,
-# on which this script is roughly based.
+# Thanks to Nazar78 [TeaNazaR.com] for his `godaddy-ddns` script, on which this
+# script is roughly based.
 
 # contains script vars; required to exist
 EPIK_DDNS_PROPERTIES_SH="$HOME/.epik-ddns/properties.sh"
+
+# timestamped WAN IP cache
+EPIK_DDNS_CACHE_TXT="$HOME/.epik-ddns/last_update_cache.txt"
 
 # OpenWRT network functions; optional to exist
 # if not present, external service is used to determine WAN IP
 OPENWRT_NETWORK_SH='/lib/functions/network.sh'
 EXTERNAL_IP_SERVICE='https://ipinfo.io/ip'
-
-# timestamped WAN IP used by the previous successful API call
-EPIK_DDNS_CACHE="$HOME/.epik-ddns/last_update_cache.txt"
 
 # used to validate IPv4 addresses
 # source: https://unix.stackexchange.com/a/111852
@@ -108,7 +119,7 @@ function postUpdateAndExit() {
 	fi
 
 	# update WAN IP cache
-	if ! printf '%s %s' "$_current_time" "$_wan_ip" >"$EPIK_DDNS_CACHE"; then
+	if ! printf '%s %s' "$_current_time" "$_wan_ip" >"$EPIK_DDNS_CACHE_TXT"; then
 		echo 'failed to write WAN IP cache' >&2
 		exit 1
 	fi
@@ -121,10 +132,10 @@ function postUpdateAndExit() {
 #  - cached WAN IP timestamp is missing/malformed, or
 #  - current WAN IP doesn't match the cached one, or
 #  - more than 24-hours has elapsed since last update
-if [[ ! -r $EPIK_DDNS_CACHE ]]; then
+if [[ ! -r $EPIK_DDNS_CACHE_TXT ]]; then
 	postUpdateAndExit
 else
-	read _last_update_timestamp _wan_ip_cached <"$EPIK_DDNS_CACHE"
+	read _last_update_timestamp _wan_ip_cached <"$EPIK_DDNS_CACHE_TXT"
 	if [[ ! $_last_update_timestamp =~ $UINT_REGEX ]]; then
 		postUpdateAndExit
 	elif [[ $_wan_ip != $_wan_ip_cached ]]; then
