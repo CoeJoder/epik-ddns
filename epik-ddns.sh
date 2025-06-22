@@ -14,7 +14,7 @@
 # which returns the device's WAN IP.  Otherwise, an external service is used to
 # fetch the host's external IP: https://ipinfo.io/ip
 #
-# Requires: bash, curl, jq
+# Requires: bash, curl, jq, grep
 #
 # The following variables are required to be set in: ~/.epik-ddns/properties.sh
 #   EPIK_SIGNATURE - domain-specific API key
@@ -57,12 +57,19 @@ UINT_REGEX='^[[:digit:]]+$'
 ONE_DAY_IN_SECONDS="$((24 * 60 * 60))"
 
 # ensure availability of dependencies
-for _command in curl jq; do
+for _command in curl jq grep; do
 	if ! type -P "$_command" &>/dev/null; then
 		echo "\`$_command\` not found" >&2
 		exit 1
 	fi
 done
+
+# ensure `curl` supports --fail-with-body
+if curl --fail-with-body --head example.com 2>&1 >/dev/null | \
+	grep -q -- '--fail-with-body'; then
+	echo "curl does not support '--fail-with-body' option; please upgrade"
+	exit 1
+fi
 
 # read & validate properties file
 if [[ ! -f $EPIK_DDNS_PROPERTIES_SH ]]; then
