@@ -1,9 +1,10 @@
 # epik-ddns
 A simple DDNS bash script to update [Epik](https://www.epik.com/) DNS records.
 
-Suggested to be run periodically as a cron job, this script calls Epik's [`set-ddns`](https://docs-userapi.epik.com/v2/#/Ddns/setDdns) API method whenever a change to the host's external IP address is detected.  As Epik has no `read-ddns` method available sans IP-whitelisting, the call is always made on the first run, and at least once every 24-hours.
+Suggested to be run periodically as a cron job, this script calls Epik's [`set-ddns`](https://docs-userapi.epik.com/v2/#/Ddns/setDdns) API method whenever a change to the host's external IP address is detected.
 
-When run on [OpenWRT](https://openwrt.org/) router firmware, an internal library function is called which returns the device's WAN IP.  Otherwise, an external service is used to fetch the host's external IP: https://ipinfo.io/ip
+### Discovering the external IP address
+When run on [OpenWRT](https://openwrt.org/) router firmware, an internal library function is called which returns the device's WAN IP.  Otherwise, an external service is used: https://ipinfo.io/ip
 
 ## Requirements
 
